@@ -1,0 +1,170 @@
+services:
+  einsbym-database:
+    profiles:
+      - dev
+      - local
+    image: postgres:alpine
+    container_name: einsbym-database
+    volumes:
+      - database:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: einsbym
+      PGTZ: America/Recife
+    ports:
+      - "5432:5432"
+    networks:
+      - einsbym-network
+
+  minio:
+    profiles:
+      - dev
+      - local
+    container_name: minio
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - storage:/data
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: adminpass
+    command: server /data --console-address ":9001"
+    networks:
+      - einsbym-network
+
+  create-required-buckets:
+    profiles:
+      - dev
+      - local
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set myminio http://minio:9000 admin adminpass &&
+      mc anonymous set public myminio/einsbym &&
+      mc policy set download myminio/einsbym &&
+      mc mb myminio/temp
+      "
+    environment:
+      PRESCON_S3_ACCESS_KEY: admin
+      PRESCON_S3_SECRET_KEY: adminpass
+    networks:
+      - einsbym-network
+
+  redis:
+    profiles:
+      - dev
+      - local
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - caching:/data
+    networks:
+      - einsbym-network
+
+  redisinsight:
+    profiles:
+      - dev
+      - local
+    image: redis/redisinsight:latest
+    ports:
+      - "5540:5540"
+    networks:
+      - einsbym-network
+    depends_on:
+      - redis
+
+  einsbym-storage:
+    profiles:
+      - dev
+      - local
+    build:
+      context: ../einsbym-storage
+      dockerfile: ./Dockerfile
+    container_name: einsbym-storage
+    depends_on:
+      - minio
+    ports:
+      - "8080:8080"
+    networks:
+      - einsbym-network
+    environment:
+      SERVER_PORT: 8080
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY_ID: admin
+      MINIO_SECRET_ACCESS_KEY: adminpass
+      MINIO_USE_SSL: false
+      MINIO_BUCKET_NAME: einsbym
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: adminpass
+
+  einsbym-api:
+    profiles:
+      - local
+    build:
+      context: ../einsbym-api
+      dockerfile: ./Dockerfile
+    container_name: einsbym-api
+    depends_on:
+      - einsbym-database
+      - redis
+    environment:
+      DB_HOST: einsbym-database
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: root
+      DB_NAME: einsbym
+      DB_SYNCRONIZE: true
+      SERVER_PORT: 4000
+      JWT_SECRET: wowlookatmyamazingsecretkey
+      EINSBYM_STORAGE: http://einsbym-storage:8080/storage-service
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "4000:4000"
+    networks:
+      - einsbym-network
+
+  einsbym-api-gateway:
+    profiles:
+      - dev
+      - local
+    build:
+      context: ../einsbym-api-gateway
+      dockerfile: ./Dockerfile
+    container_name: einsbym-api-gateway
+    ports:
+      - "8888:8888"
+    networks:
+      - einsbym-network
+    environment:
+      EINSBYM_SERVER_PORT: 8888
+      EINSBYM_DB_HOST: einsbym-database
+      EINSBYM_DB_PORT: 5432
+      EINSBYM_DB_USER: postgres
+      EINSBYM_DB_PASSWORD: root
+      EINSBYM_DB_NAME: einsbym
+      EINSBYM_DB_DDL_AUTO: update
+      EINSBYM_DB_SHOW_SQL: false
+      EINSBYM_STORAGE_SERVICE_HOST: einsbym-storage
+      EINSBYM_STORAGE_SERVICE_PORT: 8080
+      EINSBYM_API_HOST: einsbym-api
+      EINSBYM_API_PORT: 4000
+    depends_on:
+      - einsbym-database
+      - einsbym-api
+
+networks:
+  einsbym-network:
+
+volumes:
+  database:
+  caching:
+  storage:
+    driver: local
